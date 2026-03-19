@@ -289,7 +289,11 @@ class Rotary(nn.Module):
             self._cos_cached = freqs.cos()[None, None, :, :]
             self._sin_cached = freqs.sin()[None, None, :, :]
             self._seq_len_cached = seq_len
-        return self._cos_cached.to(dtype=dtype), self._sin_cached.to(dtype=dtype)
+        # The cached tensors may have been created under torch.inference_mode() during eval.
+        # Clone them on return so training autograd can safely save them for backward.
+        cos = self._cos_cached.to(device=device, dtype=dtype).clone()
+        sin = self._sin_cached.to(device=device, dtype=dtype).clone()
+        return cos, sin
 
 
 def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:

@@ -1,41 +1,40 @@
 # Repository Guidelines
 
-This repository is documentation-first. The current contents live under `docs/` and describe the parameter-golf context. Use this guide to keep contributions clear, consistent, and easy to review.
-
 ## Project Structure & Module Organization
-- `docs/`: Primary content (e.g., `golf-param-competition.md`, `plan.md`).
-- Future code or assets should live alongside a brief `README` in their folder.
-- Prefer small, focused directories with self-explanatory names (kebab-case).
+- Primary content lives in `docs/` (e.g., `golf-param-competition.md`, `plan.md`).
+- Add future code or assets in focused, kebab-case folders (e.g., `tools/link-checker/`) with a brief `README.md` in that folder.
+- Prefer small, self-contained modules; keep related examples and diagrams alongside their doc.
+- Use relative links within `docs/` to reference files and sections.
 
 ## Build, Test, and Development Commands
-- No build step is required for Markdown changes.
-- Optional checks (recommended):
-  - `prettier -w docs/**/*.md`: Format Markdown consistently.
-  - `markdownlint docs/**/*.md`: Lint headings, lists, and links.
-  - If you add scripts, include a `make check` target to run linters/tests.
+- No build step is required for Markdown-only changes.
+- Format Markdown:
+  - `prettier -w docs/**/*.md`
+- Lint Markdown:
+  - `markdownlint docs/**/*.md`
+- If you add scripts, provide a `Makefile` with `make check` that runs linters/tests.
 
 ## Coding Style & Naming Conventions
-- Markdown: use `#`-based headings, sentence-case titles, and fenced code blocks.
-- Line width: aim for 80–100 chars; wrap lists and paragraphs thoughtfully.
-- Filenames: kebab-case (e.g., `evaluation-notes.md`).
-- Links: prefer relative paths within `docs/`.
+- Markdown: `#`-based headings; sentence-case titles; fenced code blocks with language hints.
+- Line width: aim for 80–100 characters; wrap paragraphs and lists thoughtfully.
+- Filenames and directories: kebab-case (e.g., `evaluation-notes.md`, `scenario-examples/`).
+- Links: prefer relative paths (e.g., `../docs/plan.md`).
 
 ## Testing Guidelines
-- Docs: validate links, code blocks, and commands you include.
-- Scripts (if added): provide a minimal smoke test and document usage.
-- Keep examples runnable; include exact commands and expected outputs when feasible.
+- Docs: validate links and commands you include; keep examples runnable with exact invocations and expected snippets of output.
+- Scripts (if added): include a minimal smoke test and document usage in the folder `README.md`.
+- Centralize checks under `make check` when present.
 
 ## Commit & Pull Request Guidelines
-- Commits: short, imperative subject (≤72 chars), body for context when needed.
+- Commits: short, imperative subject (≤72 chars) with optional body for context.
   - Examples: `Update competition rules`, `Add link checks to CI`.
-- Pull Requests: include purpose, key changes, and how to review.
-  - Reference related issues, attach screenshots for docs that include diagrams, and list testing steps.
+- Pull requests: state purpose, key changes, and review steps; reference related issues; include screenshots for diagrams and list testing steps.
 
-## Security & Configuration Tips (Optional)
-- Do not commit secrets or tokens; use environment variables and `.env.local` (gitignored).
-- If adding code, pin tool versions and document prerequisites in the folder `README`.
+## Security & Configuration Tips
+- Do not commit secrets or tokens. Use environment variables and a gitignored `.env.local` when needed.
+- If adding code, pin tool versions and document prerequisites in the folder `README.md`.
 
 ## Getting Started
 - Edit or add files in `docs/`.
-- Validate with formatting/linting tools if available, then open a PR with a concise summary and review steps.
-
+- Run `prettier` and `markdownlint` (or `make check` if available).
+- Open a PR with a concise summary and clear review steps.
