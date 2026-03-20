@@ -407,16 +407,18 @@ class EARCModel(nn.Module):
         if ATTNRES:
             hidden_states: list[Tensor] = [h]
         for t in range(RECURRENCE_STEPS):
-            h = self.block(h)
+            h_block = self.block(h)
             if ATTNRES:
-                # Attend over prior hidden states along the recurrence axis
-                V = torch.stack(hidden_states, dim=1)  # (B, Tprev, S, D)
+                # Attend over all prior hidden states PLUS the current block output.
+                V = torch.stack(hidden_states + [h_block], dim=1)  # (B, Tprev+1, S, D)
                 K = self.block.attnres_norm(V)
                 q = self.block.attnres_queries[t].to(dtype=V.dtype, device=V.device)  # (D,)
-                logits = torch.einsum('d, b t s d -> b t s', q, K)
-                alpha = logits.softmax(dim=1)  # (B, Tprev, S)
-                h = torch.einsum('b t s, b t s d -> b s d', alpha, V)
+                logits = torch.einsum('d,btsd->bts', q, K)
+                alpha = logits.softmax(dim=1)  # (B, Tprev+1, S)
+                h = torch.einsum('bts,btsd->bsd', alpha, V)
                 hidden_states.append(h)
+            else:
+                h = h_block
         h = self.final_norm(h).reshape(-1, h.size(-1))
         targets = target_ids.reshape(-1)
         logits_proj = F.linear(h, self.tok_emb.weight) if self.lm_head is None else self.lm_head(h)
