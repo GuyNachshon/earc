@@ -9,6 +9,7 @@ This file captures the minimal context needed to continue work in a new session 
   - Tokenizer-agnostic eval: `BYTE_LEVEL=1` short-circuits byte counting; SP path uses SentencePiece LUTs.
   - INT8+zlib artifact creation + roundtrip eval.
   - Logs: param counts, grad norms (pre-clip), tok/s and B/s at validation.
+- Experiment 0A (BPB eval audit): PASS. Eval uses raw-byte denominator for both byte-level and SP-1024 via LUTs; INT8+zlib roundtrip re-eval implemented and logged.
 - .gitignore excludes `data/datasets/`, `logs/`, and `final_model.*` to avoid large file commits.
 
 ## Data Prep (1×H100 host)
@@ -58,4 +59,3 @@ python3 records/track_10min_16mb/2026-03-19_EARC/train_gpt.py
 ## Next Steps (after calibration)
 - If sizes are within 10% and training is stable, launch 90-minute runs with `VAL_LOSS_EVERY=500`.
 - If grad_norm clips every step at `lr=1e-3`, lower to `3e-4` for gating runs.
-
