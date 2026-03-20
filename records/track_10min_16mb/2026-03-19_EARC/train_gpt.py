@@ -35,6 +35,8 @@ except Exception:  # pragma: no cover
 # -----------------------------
 BYTE_LEVEL = bool(int(os.environ.get("BYTE_LEVEL", "0")))
 RECURRENCE_STEPS = int(os.environ.get("RECURRENCE_STEPS", "8"))
+ATTNRES = bool(int(os.environ.get("ATTNRES", "0")))
+L1_LAMBDA = float(os.environ.get("L1_LAMBDA", "0.0"))
 
 
 # -----------------------------
@@ -364,6 +366,10 @@ class EARCBlock(nn.Module):
         self.mlp_norm = RMSNorm(dim)
         self.attn = CausalSelfAttention(dim, heads, kv_heads, rope_base)
         self.mlp = SwiGLU(dim, mlp_mult)
+        if ATTNRES:
+            # One pseudo-query vector per recurrence step; zero init for uniform weights at start
+            self.attnres_queries = nn.Parameter(torch.zeros(RECURRENCE_STEPS, dim, dtype=torch.float32))
+            self.attnres_norm = RMSNorm(dim)
 
     def forward(self, x: Tensor) -> Tensor:
         x = x + self.attn(self.attn_norm(x))
@@ -396,13 +402,24 @@ class EARCModel(nn.Module):
             self.lm_head._zero_init = True
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
-        x = self.tok_emb(input_ids)
-        x = F.rms_norm(x, (x.size(-1),))
+        h = self.tok_emb(input_ids)
+        h = F.rms_norm(h, (h.size(-1),))
+        if ATTNRES:
+            hidden_states: list[Tensor] = [h]
         for t in range(RECURRENCE_STEPS):
-            x = self.block(x)
-        x = self.final_norm(x).reshape(-1, x.size(-1))
+            h = self.block(h)
+            if ATTNRES:
+                # Attend over prior hidden states along the recurrence axis
+                V = torch.stack(hidden_states, dim=1)  # (B, Tprev, S, D)
+                K = self.block.attnres_norm(V)
+                q = self.block.attnres_queries[t].to(dtype=V.dtype, device=V.device)  # (D,)
+                logits = torch.einsum('d, b t s d -> b t s', q, K)
+                alpha = logits.softmax(dim=1)  # (B, Tprev, S)
+                h = torch.einsum('b t s, b t s d -> b s d', alpha, V)
+                hidden_states.append(h)
+        h = self.final_norm(h).reshape(-1, h.size(-1))
         targets = target_ids.reshape(-1)
-        logits_proj = F.linear(x, self.tok_emb.weight) if self.lm_head is None else self.lm_head(x)
+        logits_proj = F.linear(h, self.tok_emb.weight) if self.lm_head is None else self.lm_head(h)
         logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
         return F.cross_entropy(logits.float(), targets, reduction="mean")
 
@@ -514,6 +531,14 @@ def dequantize_state_dict_int8(obj: dict[str, object]) -> dict[str, Tensor]:
             out_t = out_t.to(dtype=getattr(torch, orig_dtype)).contiguous()
         out[name] = out_t
     return out
+
+
+def measure_int8_zlib_size(model: nn.Module) -> int:
+    obj, _ = quantize_state_dict_int8(model.state_dict())
+    buf = io.BytesIO()
+    torch.save(obj, buf)
+    blob = zlib.compress(buf.getvalue(), level=9)
+    return len(blob)
 
 
 # -----------------------------
@@ -657,7 +682,14 @@ def main() -> None:
         x = x.to(device=device, dtype=torch.int64, non_blocking=True)
         y = y.to(device=device, dtype=torch.int64, non_blocking=True)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-            loss = model(x, y)
+            ce_loss = model(x, y)
+            loss = ce_loss
+            if L1_LAMBDA and L1_LAMBDA > 0.0:
+                l1_reg = torch.zeros((), device=x.device, dtype=torch.float32)
+                for p in model.parameters():
+                    if p.requires_grad:
+                        l1_reg = l1_reg + p.abs().sum().to(dtype=torch.float32)
+                loss = loss + (L1_LAMBDA * l1_reg)
         loss.backward()
         # Grad norm logging (pre-clip), then clip if enabled
         total_norm = 0.0
@@ -675,10 +707,22 @@ def main() -> None:
 
         step += 1
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
+        if L1_LAMBDA and L1_LAMBDA > 0.0 and step > 0 and (step % 200 == 0):
+            try:
+                current_bytes = measure_int8_zlib_size(model)
+                log0(f"compressed_bytes_current:{current_bytes}")
+            except Exception as e:
+                log0(f"compressed_bytes_error:{e}")
         if args.train_log_every > 0 and (step <= 10 or step % args.train_log_every == 0):
-            log0(
-                f"step:{step}/{args.iterations} train_loss:{loss.item():.4f} train_time:{approx_training_time_ms:.0f}ms"
-            )
+            if L1_LAMBDA and L1_LAMBDA > 0.0:
+                l1_val = float(l1_reg.item()) if 'l1_reg' in locals() else 0.0
+                log0(
+                    f"step:{step}/{args.iterations} train_loss:{loss.item():.4f} ce_loss:{ce_loss.item():.4f} l1_reg:{l1_val:.4f} l1_lambda:{L1_LAMBDA:.2e} train_time:{approx_training_time_ms:.0f}ms"
+                )
+            else:
+                log0(
+                    f"step:{step}/{args.iterations} train_loss:{loss.item():.4f} train_time:{approx_training_time_ms:.0f}ms"
+                )
         if max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms:
             training_time_ms = approx_training_time_ms
             log0(

@@ -10,6 +10,14 @@ This file captures the minimal context needed to continue work in a new session 
   - INT8+zlib artifact creation + roundtrip eval.
   - Logs: param counts, grad norms (pre-clip), tok/s and B/s at validation.
 - Experiment 0A (BPB eval audit): PASS. Eval uses raw-byte denominator for both byte-level and SP-1024 via LUTs; INT8+zlib roundtrip re-eval implemented and logged.
+
+## Experiment 0B — Byte-level vs SP-1024 (Decision)
+
+Runs (ITERATIONS=1000, TRAIN_BATCH_TOKENS=131072, SEQ_LEN=1024, 30 min cap):
+- Byte-level (BYTE_LEVEL=1): val_bpb=2.5248; roundtrip_bpb=2.5608; int8+zlib size=846,512 B; tok/s≈289k.
+- SP-1024 (BYTE_LEVEL=0): val_bpb=2.5986; roundtrip_bpb=2.6308; int8+zlib size=856,561 B; tok/s≈316k (≈770k B/s).
+
+Decision: proceed with byte-level (wins by ~0.07 BPB; threshold=0.005).
 - .gitignore excludes `data/datasets/`, `logs/`, and `final_model.*` to avoid large file commits.
 
 ## Data Prep (1×H100 host)
