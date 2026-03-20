@@ -58,7 +58,8 @@ def download_sp1024(repo_id: str, out_root: Path, train_shards: int | None) -> N
     tok_dir.mkdir(parents=True, exist_ok=True)
 
     # Tokenizer
-    remote_tok = "tokenizers/fineweb_1024_bpe.model"
+    # In the dataset repo, assets are nested under a top-level "datasets/" folder.
+    remote_tok = "datasets/tokenizers/fineweb_1024_bpe.model"
     tok_src = hf_get_dataset_file(repo_id, remote_tok)
     tok_dst = tok_dir / Path(remote_tok).name
     if not tok_dst.exists():
@@ -69,7 +70,7 @@ def download_sp1024(repo_id: str, out_root: Path, train_shards: int | None) -> N
     while True:
         name = f"fineweb_val_{val_idx:06d}.bin"
         try:
-            src = hf_get_dataset_file(repo_id, f"datasets/fineweb10B_sp1024/{name}")
+            src = hf_get_dataset_file(repo_id, f"datasets/datasets/fineweb10B_sp1024/{name}")
         except Exception:
             break
         dst = ds_dir / name
@@ -87,7 +88,7 @@ def download_sp1024(repo_id: str, out_root: Path, train_shards: int | None) -> N
             break
         name = f"fineweb_train_{train_idx:06d}.bin"
         try:
-            src = hf_get_dataset_file(repo_id, f"datasets/fineweb10B_sp1024/{name}")
+            src = hf_get_dataset_file(repo_id, f"datasets/datasets/fineweb10B_sp1024/{name}")
         except Exception:
             break
         dst = ds_dir / name
@@ -124,4 +125,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
