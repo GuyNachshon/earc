@@ -65,6 +65,21 @@ Setup: Byte-level, trained with `RECURRENCE_STEPS=8`; evaluate with higher `EVAL
   - eval_time≈101,135 ms (reported)
 
 Preliminary decision: increasing eval recurrence to 16/32 degrades BPB substantially; keep T_eval = 8 (no eval-time scaling). Further T_eval (64) likely worse; can be skipped unless revisiting with phase modulation.
+
+## Experiment 0F — Phase Modulation
+
+Add a per-step residual phase signal.
+
+- PHASE_MOD=0 (control, 20 min):
+  - final_int8_zlib_roundtrip val_bpb=2.1291
+  - Serialized model int8+zlib: 709,723 bytes
+- PHASE_MOD=1 (vector, 20 min):
+  - final_int8_zlib_roundtrip val_bpb=2.1224
+  - Serialized model int8+zlib: 713,729 bytes
+
+Decision: INCLUDE phase modulation (vector). BPB improves by 0.0067 with ~+4 KB size.
+
+Change: Upgraded phase to also support sinusoidal generator (`PHASE_KIND=sin`, `PHASE_K=8`) to permit `EVAL_RECURRENCE_STEPS > RECURRENCE_STEPS` in future eval sweeps.
 - .gitignore excludes `data/datasets/`, `logs/`, and `final_model.*` to avoid large file commits.
 
 ## Data Prep (1×H100 host)

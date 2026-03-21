@@ -51,6 +51,8 @@ WANDB_PROJECT = os.environ.get("WANDB_PROJECT")
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY")
 WANDB_RUN_NAME = os.environ.get("WANDB_RUN_NAME")
 PHASE_MOD = bool(int(os.environ.get("PHASE_MOD", "0")))
+PHASE_KIND = os.environ.get("PHASE_KIND", "sin")  # 'sin' (default) or 'vector'
+PHASE_K = int(os.environ.get("PHASE_K", "8"))
 
 
 # -----------------------------
@@ -226,7 +228,7 @@ def eval_val(
         # Optionally run with deeper recurrence at eval
         original_steps = getattr(model, "recurrence_steps", RECURRENCE_STEPS)
         eval_steps = EVAL_RECURRENCE_STEPS if EVAL_RECURRENCE_STEPS > 0 else RECURRENCE_STEPS
-        if (ATTNRES or PHASE_MOD) and eval_steps > RECURRENCE_STEPS:
+        if (ATTNRES or (PHASE_MOD and PHASE_KIND == "vector")) and eval_steps > RECURRENCE_STEPS:
             eval_steps = RECURRENCE_STEPS
         if hasattr(model, "recurrence_steps"):
             model.recurrence_steps = eval_steps
@@ -425,9 +427,14 @@ class EARCModel(nn.Module):
             self.lm_head._zero_init = True
         # Default recurrence steps used in forward(); may be overridden for eval
         self.recurrence_steps = RECURRENCE_STEPS
-        if PHASE_MOD:
-            # Per-step phase vector, zero-init for stable start
+        if PHASE_MOD and PHASE_KIND == "vector":
+            # Per-step phase vector, zero-init for stable start (fixed to training steps)
             self.phase = nn.Parameter(torch.zeros(RECURRENCE_STEPS, model_dim, dtype=torch.float32))
+        if PHASE_MOD and PHASE_KIND == "sin":
+            # Sinusoidal phase generator allowing arbitrary eval depth
+            self.phase_a = nn.Parameter(torch.zeros(PHASE_K, model_dim, dtype=torch.float32))  # amplitudes
+            self.phase_logw = nn.Parameter(torch.zeros(PHASE_K, dtype=torch.float32))  # log frequency
+            self.phase_phi = nn.Parameter(torch.zeros(PHASE_K, dtype=torch.float32))  # phase offsets
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         h = self.tok_emb(input_ids)
@@ -436,8 +443,19 @@ class EARCModel(nn.Module):
             hidden_states: list[Tensor] = [h]
         for t in range(self.recurrence_steps):
             h_in = h
-            if PHASE_MOD and t < getattr(self, "phase").shape[0]:
-                h_in = h + self.phase[t].to(dtype=h.dtype, device=h.device)
+            if PHASE_MOD:
+                if PHASE_KIND == "vector":
+                    if t < getattr(self, "phase").shape[0]:
+                        h_in = h + self.phase[t].to(dtype=h.dtype, device=h.device)
+                elif PHASE_KIND == "sin":
+                    # Compute phase vector: sum_k a_k * sin(w_k * t + phi_k), broadcast over (B,S,D)
+                    if PHASE_K > 0:
+                        w = self.phase_logw.exp()  # (K,) positive frequencies
+                        ang = w * float(t) + self.phase_phi  # (K,)
+                        s = torch.sin(ang).view(PHASE_K, 1, 1, 1)  # (K,1,1,1)
+                        a = self.phase_a.to(dtype=h.dtype, device=h.device).view(PHASE_K, 1, 1, -1)  # (K,1,1,D)
+                        phase_vec = (a * s).sum(dim=0)  # (1,1,D)
+                        h_in = h + phase_vec
             h_block = self.block(h_in)
             if ATTNRES:
                 # Attend over all prior hidden states PLUS the current block output.
@@ -671,6 +689,8 @@ def main() -> None:
         log0("attnres:enabled")
     if L1_LAMBDA and L1_LAMBDA > 0.0:
         log0(f"l1_lambda:{L1_LAMBDA}")
+    if PHASE_MOD:
+        log0(f"phase_mod:enabled kind={PHASE_KIND} K={PHASE_K}")
     # Optional Weights & Biases
     wb_run = None
     if WANDB_ENABLED and wandb is not None and WANDB_PROJECT:
@@ -699,6 +719,7 @@ def main() -> None:
     # Run config JSON snapshot
     logj("config", run_id=args.run_id, params_total=n_params, embed_params=n_embed,
          byte_level=BYTE_LEVEL, attnres=ATTNRES, l1_lambda=L1_LAMBDA,
+         phase_mod=PHASE_MOD, phase_kind=PHASE_KIND, phase_k=PHASE_K,
          recurrence_steps=RECURRENCE_STEPS, eval_recurrence_steps=EVAL_RECURRENCE_STEPS,
          vocab_size=args.vocab_size, model_dim=args.model_dim)
 
