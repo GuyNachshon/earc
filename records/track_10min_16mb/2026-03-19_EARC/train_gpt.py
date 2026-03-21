@@ -8,6 +8,7 @@ AttnRes, no entropy training.
 from __future__ import annotations
 
 import io
+import json
 import math
 import os
 import random
@@ -17,6 +18,7 @@ import time
 import uuid
 import zlib
 from pathlib import Path
+from datetime import datetime
 from typing import Iterator
 
 import numpy as np
@@ -29,6 +31,11 @@ try:
 except Exception:  # pragma: no cover
     spm = None
 
+try:  # optional telemetry
+    import wandb  # type: ignore
+except Exception:  # pragma: no cover
+    wandb = None
+
 
 # -----------------------------
 # GLOBAL MODE SWITCHES
@@ -37,6 +44,12 @@ BYTE_LEVEL = bool(int(os.environ.get("BYTE_LEVEL", "0")))
 RECURRENCE_STEPS = int(os.environ.get("RECURRENCE_STEPS", "8"))
 ATTNRES = bool(int(os.environ.get("ATTNRES", "0")))
 L1_LAMBDA = float(os.environ.get("L1_LAMBDA", "0.0"))
+EVAL_RECURRENCE_STEPS = int(os.environ.get("EVAL_RECURRENCE_STEPS", "0"))
+LOG_JSON = bool(int(os.environ.get("LOG_JSON", "0")))
+WANDB_ENABLED = bool(int(os.environ.get("WANDB", "0")))
+WANDB_PROJECT = os.environ.get("WANDB_PROJECT")
+WANDB_ENTITY = os.environ.get("WANDB_ENTITY")
+WANDB_RUN_NAME = os.environ.get("WANDB_RUN_NAME")
 
 
 # -----------------------------
@@ -209,6 +222,13 @@ def eval_val(
 
     model.eval()
     with torch.inference_mode():
+        # Optionally run with deeper recurrence at eval
+        original_steps = getattr(model, "recurrence_steps", RECURRENCE_STEPS)
+        eval_steps = EVAL_RECURRENCE_STEPS if EVAL_RECURRENCE_STEPS > 0 else RECURRENCE_STEPS
+        if ATTNRES and eval_steps > RECURRENCE_STEPS:
+            eval_steps = RECURRENCE_STEPS
+        if hasattr(model, "recurrence_steps"):
+            model.recurrence_steps = eval_steps
         for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
             batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
             raw_start = batch_seq_start * args.train_seq_len
@@ -234,6 +254,8 @@ def eval_val(
                 )
                 val_byte_count += token_bytes.to(torch.float64).sum()
 
+        if hasattr(model, "recurrence_steps"):
+            model.recurrence_steps = original_steps
     val_loss = val_loss_sum / val_token_count
     bits_per_token = val_loss.item() / math.log(2.0)
     tokens_per_byte = val_token_count.item() / max(val_byte_count.item(), 1e-9)
@@ -400,13 +422,15 @@ class EARCModel(nn.Module):
         self.lm_head = None if tie_embeddings else CastedLinear(model_dim, vocab_size, bias=False)
         if self.lm_head is not None:
             self.lm_head._zero_init = True
+        # Default recurrence steps used in forward(); may be overridden for eval
+        self.recurrence_steps = RECURRENCE_STEPS
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         h = self.tok_emb(input_ids)
         h = F.rms_norm(h, (h.size(-1),))
         if ATTNRES:
             hidden_states: list[Tensor] = [h]
-        for t in range(RECURRENCE_STEPS):
+        for t in range(self.recurrence_steps):
             h_block = self.block(h)
             if ATTNRES:
                 # Attend over all prior hidden states PLUS the current block output.
@@ -567,12 +591,24 @@ def main() -> None:
     # Logging setup
     os.makedirs("logs", exist_ok=True)
     logfile = f"logs/{args.run_id}.txt"
+    jsonlogfile = f"logs/{args.run_id}.jsonl"
 
     def log0(msg: str, console: bool = True) -> None:
         if console:
             print(msg)
         with open(logfile, "a", encoding="utf-8") as f:
             print(msg, file=f)
+
+    def logj(kind: str, **payload) -> None:
+        if not LOG_JSON:
+            return
+        rec = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "kind": kind,
+            **payload,
+        }
+        with open(jsonlogfile, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
 
     # Environment + system info
     log0("=" * 100, console=False)
@@ -624,6 +660,40 @@ def main() -> None:
     n_params = sum(p.numel() for p in model.parameters())
     n_embed = int(model.tok_emb.weight.numel())
     log0(f"model_params_total:{n_params} embed_params:{n_embed} block_params:{n_params - n_embed}")
+    if ATTNRES:
+        log0("attnres:enabled")
+    if L1_LAMBDA and L1_LAMBDA > 0.0:
+        log0(f"l1_lambda:{L1_LAMBDA}")
+    # Optional Weights & Biases
+    wb_run = None
+    if WANDB_ENABLED and wandb is not None and WANDB_PROJECT:
+        wb_cfg = {
+            "BYTE_LEVEL": BYTE_LEVEL,
+            "RECURRENCE_STEPS": RECURRENCE_STEPS,
+            "EVAL_RECURRENCE_STEPS": EVAL_RECURRENCE_STEPS,
+            "ATTNRES": ATTNRES,
+            "L1_LAMBDA": L1_LAMBDA,
+            "VOCAB_SIZE": args.vocab_size,
+            "MODEL_DIM": args.model_dim,
+            "NUM_HEADS": args.num_heads,
+            "NUM_KV_HEADS": args.num_kv_heads,
+            "MLP_MULT": args.mlp_mult,
+            "TRAIN_BATCH_TOKENS": args.train_batch_tokens,
+            "TRAIN_SEQ_LEN": args.train_seq_len,
+            "VAL_BATCH_SIZE": args.val_batch_size,
+            "ITERATIONS": args.iterations,
+            "LR": args.lr,
+            "WEIGHT_DECAY": args.weight_decay,
+            "GRAD_CLIP_NORM": args.grad_clip_norm,
+            "PARAMS_TOTAL": n_params,
+        }
+        wb_run = wandb.init(project=WANDB_PROJECT, entity=WANDB_ENTITY, name=(WANDB_RUN_NAME or args.run_id), config=wb_cfg)
+        log0("wandb:enabled")
+    # Run config JSON snapshot
+    logj("config", run_id=args.run_id, params_total=n_params, embed_params=n_embed,
+         byte_level=BYTE_LEVEL, attnres=ATTNRES, l1_lambda=L1_LAMBDA,
+         recurrence_steps=RECURRENCE_STEPS, eval_recurrence_steps=EVAL_RECURRENCE_STEPS,
+         vocab_size=args.vocab_size, model_dim=args.model_dim)
 
     # Optimizer
     optim = torch.optim.AdamW(
@@ -665,6 +735,12 @@ def main() -> None:
                 f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "
                 f"train_time:{training_time_ms:.0f}ms tok/s:{toks_per_sec:.0f}B/s:{bytes_per_sec:.0f}"
             )
+            logj("val", step=step, val_loss=float(val_loss), val_bpb=float(val_bpb),
+                 toks_per_sec=float(toks_per_sec), bytes_per_sec=float(bytes_per_sec))
+            if wb_run is not None:
+                wandb.log({"val/loss": float(val_loss), "val/bpb": float(val_bpb),
+                           "throughput/tok_s": float(toks_per_sec), "throughput/bytes_s": float(bytes_per_sec),
+                           "time/train_ms": float(training_time_ms), "step": step}, step=step)
             last_val_step = step
             torch.cuda.synchronize()
             t0 = time.perf_counter()
@@ -713,6 +789,9 @@ def main() -> None:
             try:
                 current_bytes = measure_int8_zlib_size(model)
                 log0(f"compressed_bytes_current:{current_bytes}")
+                logj("compressed_size", step=step, int8_zlib_bytes=int(current_bytes))
+                if wb_run is not None:
+                    wandb.log({"artifact/bytes_current": int(current_bytes), "step": step}, step=step)
             except Exception as e:
                 log0(f"compressed_bytes_error:{e}")
         if args.train_log_every > 0 and (step <= 10 or step % args.train_log_every == 0):
@@ -721,10 +800,18 @@ def main() -> None:
                 log0(
                     f"step:{step}/{args.iterations} train_loss:{loss.item():.4f} ce_loss:{ce_loss.item():.4f} l1_reg:{l1_val:.4f} l1_lambda:{L1_LAMBDA:.2e} train_time:{approx_training_time_ms:.0f}ms"
                 )
+                logj("train", step=step, train_loss=float(loss.item()), ce_loss=float(ce_loss.item()), l1_reg=l1_val,
+                     train_time_ms=float(approx_training_time_ms))
+                if wb_run is not None:
+                    wandb.log({"train/loss": float(loss.item()), "train/ce_loss": float(ce_loss.item()),
+                               "reg/l1": l1_val, "time/train_ms": float(approx_training_time_ms), "step": step}, step=step)
             else:
                 log0(
                     f"step:{step}/{args.iterations} train_loss:{loss.item():.4f} train_time:{approx_training_time_ms:.0f}ms"
                 )
+                logj("train", step=step, train_loss=float(loss.item()), train_time_ms=float(approx_training_time_ms))
+                if wb_run is not None:
+                    wandb.log({"train/loss": float(loss.item()), "time/train_ms": float(approx_training_time_ms), "step": step}, step=step)
         if max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms:
             training_time_ms = approx_training_time_ms
             log0(
@@ -741,6 +828,7 @@ def main() -> None:
     log0(f"Serialized model: {model_bytes} bytes")
     log0(f"Code size: {code_bytes} bytes")
     log0(f"Total submission size: {model_bytes + code_bytes} bytes")
+    logj("artifact_fp32", model_bytes=int(model_bytes), code_bytes=int(code_bytes), total_bytes=int(model_bytes + code_bytes))
 
     quant_obj, quant_stats = quantize_state_dict_int8(model.state_dict())
     quant_buf = io.BytesIO()
@@ -754,6 +842,9 @@ def main() -> None:
         f"Serialized model int8+zlib: {quant_file_bytes} bytes (payload:{quant_stats['int8_payload_bytes']})"
     )
     log0(f"Total submission size int8+zlib: {quant_file_bytes + code_bytes} bytes")
+    logj("artifact_int8_zlib", model_bytes_int8_zlib=int(quant_file_bytes), payload_bytes=int(quant_stats['int8_payload_bytes']), total_bytes=int(quant_file_bytes + code_bytes))
+    if 'wb_run' in locals() and wb_run is not None:
+        wandb.log({"artifact/final_int8_zlib_bytes": int(quant_file_bytes), "artifact/payload_bytes": int(quant_stats['int8_payload_bytes'])})
 
     # Roundtrip eval
     quant_state = torch.load(
@@ -764,10 +855,15 @@ def main() -> None:
     t_qeval = time.perf_counter()
     q_val_loss, q_val_bpb, _, _ = eval_val(args, model, device, val_tokens, sp_luts)
     torch.cuda.synchronize()
+    eval_ms = 1000.0 * (time.perf_counter() - t_qeval)
     log0(
         f"final_int8_zlib_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
-        f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
+        f"eval_time:{eval_ms:.0f}ms"
     )
+    logj("final_roundtrip", val_loss=float(q_val_loss), val_bpb=float(q_val_bpb), eval_time_ms=float(eval_ms))
+    if 'wb_run' in locals() and wb_run is not None:
+        wandb.log({"roundtrip/val_loss": float(q_val_loss), "roundtrip/val_bpb": float(q_val_bpb),
+                   "roundtrip/eval_time_ms": float(eval_ms)})
 
 
 if __name__ == "__main__":

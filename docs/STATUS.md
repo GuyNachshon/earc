@@ -18,6 +18,19 @@ Runs (ITERATIONS=1000, TRAIN_BATCH_TOKENS=131072, SEQ_LEN=1024, 30 min cap):
 - SP-1024 (BYTE_LEVEL=0): val_bpb=2.5986; roundtrip_bpb=2.6308; int8+zlib size=856,561 B; tok/s≈316k (≈770k B/s).
 
 Decision: proceed with byte-level (wins by ~0.07 BPB; threshold=0.005).
+
+## Experiment 0C — Attention Residuals (AttnRes)
+
+Setup: Byte-level, T=8, identical wallclock (20 min), same hyperparams.
+
+- Control (ATTNRES=0):
+  - final_int8_zlib_roundtrip val_bpb=2.1712
+  - Serialized model int8+zlib: 709,783 bytes
+- AttnRes (ATTNRES=1):
+  - final_int8_zlib_roundtrip val_bpb=2.3139
+  - Serialized model int8+zlib: 717,172 bytes
+
+Decision: EXCLUDE AttnRes. BPB regresses by +0.1427 and size increases ~7.4 KB.
 - .gitignore excludes `data/datasets/`, `logs/`, and `final_model.*` to avoid large file commits.
 
 ## Data Prep (1×H100 host)
