@@ -31,6 +31,40 @@ Setup: Byte-level, T=8, identical wallclock (20 min), same hyperparams.
   - Serialized model int8+zlib: 717,172 bytes
 
 Decision: EXCLUDE AttnRes. BPB regresses by +0.1427 and size increases ~7.4 KB.
+
+## Experiment 0D — L1 Entropy Regularization (Decision)
+
+Setup: Byte-level, T=8, identical wallclock (20 min), same hyperparams.
+
+- λ = 0 (baseline):
+  - final_int8_zlib_roundtrip val_bpb=2.1712
+  - Serialized model int8+zlib: 709,783 bytes
+- λ = 1e-5:
+  - final_int8_zlib_roundtrip val_bpb=2.2329 (+0.0617 vs baseline)
+  - Serialized model int8+zlib: 700,952 bytes (−1.24%)
+- λ = 3e-5:
+  - final_int8_zlib_roundtrip val_bpb=2.3937 (+0.2225 vs baseline)
+  - Serialized model int8+zlib: 648,501 bytes (−8.64%)
+
+Decision: EXCLUDE L1 entropy regularization. Size gains are <15% with BPB degradation ≫0.003.
+
+Next (0E): Evaluate with deeper recurrence at inference using `EVAL_RECURRENCE_STEPS` (keep training at T=8).
+
+## Experiment 0E — Eval-Time Recurrence Scaling (WIP)
+
+Setup: Byte-level, trained with `RECURRENCE_STEPS=8`; evaluate with higher `EVAL_RECURRENCE_STEPS` under a 10-minute cap.
+
+- T_eval = 16 (10 min eval):
+  - final_int8_zlib_roundtrip val_bpb=4.0099
+  - Serialized model int8+zlib: 705,407 bytes
+  - eval_time≈51,051 ms (reported)
+
+- T_eval = 32 (10 min eval):
+  - final_int8_zlib_roundtrip val_bpb=4.5552
+  - Serialized model int8+zlib: 705,513 bytes
+  - eval_time≈101,135 ms (reported)
+
+Preliminary decision: increasing eval recurrence to 16/32 degrades BPB substantially; keep T_eval = 8 (no eval-time scaling). Further T_eval (64) likely worse; can be skipped unless revisiting with phase modulation.
 - .gitignore excludes `data/datasets/`, `logs/`, and `final_model.*` to avoid large file commits.
 
 ## Data Prep (1×H100 host)

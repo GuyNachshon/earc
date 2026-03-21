@@ -50,6 +50,7 @@ WANDB_ENABLED = bool(int(os.environ.get("WANDB", "0")))
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT")
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY")
 WANDB_RUN_NAME = os.environ.get("WANDB_RUN_NAME")
+PHASE_MOD = bool(int(os.environ.get("PHASE_MOD", "0")))
 
 
 # -----------------------------
@@ -225,7 +226,7 @@ def eval_val(
         # Optionally run with deeper recurrence at eval
         original_steps = getattr(model, "recurrence_steps", RECURRENCE_STEPS)
         eval_steps = EVAL_RECURRENCE_STEPS if EVAL_RECURRENCE_STEPS > 0 else RECURRENCE_STEPS
-        if ATTNRES and eval_steps > RECURRENCE_STEPS:
+        if (ATTNRES or PHASE_MOD) and eval_steps > RECURRENCE_STEPS:
             eval_steps = RECURRENCE_STEPS
         if hasattr(model, "recurrence_steps"):
             model.recurrence_steps = eval_steps
@@ -424,6 +425,9 @@ class EARCModel(nn.Module):
             self.lm_head._zero_init = True
         # Default recurrence steps used in forward(); may be overridden for eval
         self.recurrence_steps = RECURRENCE_STEPS
+        if PHASE_MOD:
+            # Per-step phase vector, zero-init for stable start
+            self.phase = nn.Parameter(torch.zeros(RECURRENCE_STEPS, model_dim, dtype=torch.float32))
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         h = self.tok_emb(input_ids)
@@ -431,7 +435,10 @@ class EARCModel(nn.Module):
         if ATTNRES:
             hidden_states: list[Tensor] = [h]
         for t in range(self.recurrence_steps):
-            h_block = self.block(h)
+            h_in = h
+            if PHASE_MOD and t < getattr(self, "phase").shape[0]:
+                h_in = h + self.phase[t].to(dtype=h.dtype, device=h.device)
+            h_block = self.block(h_in)
             if ATTNRES:
                 # Attend over all prior hidden states PLUS the current block output.
                 V = torch.stack(hidden_states + [h_block], dim=1)  # (B, Tprev+1, S, D)
