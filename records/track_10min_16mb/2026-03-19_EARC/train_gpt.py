@@ -51,7 +51,7 @@ WANDB_PROJECT = os.environ.get("WANDB_PROJECT")
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY")
 WANDB_RUN_NAME = os.environ.get("WANDB_RUN_NAME")
 PHASE_MOD = bool(int(os.environ.get("PHASE_MOD", "0")))
-PHASE_KIND = os.environ.get("PHASE_KIND", "sin")  # 'sin' (default) or 'vector'
+PHASE_KIND = os.environ.get("PHASE_KIND", "vector")  # 'vector' (default) or 'sin'
 PHASE_K = int(os.environ.get("PHASE_K", "8"))
 
 

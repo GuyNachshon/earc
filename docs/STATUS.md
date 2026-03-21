@@ -80,6 +80,14 @@ Add a per-step residual phase signal.
 Decision: INCLUDE phase modulation (vector). BPB improves by 0.0067 with ~+4 KB size.
 
 Change: Upgraded phase to also support sinusoidal generator (`PHASE_KIND=sin`, `PHASE_K=8`) to permit `EVAL_RECURRENCE_STEPS > RECURRENCE_STEPS` in future eval sweeps.
+
+Sinusoidal variant (for completeness):
+- PHASE_MOD=1, PHASE_KIND=sin (20 min):
+  - final_int8_zlib_roundtrip val_bpb=2.1498
+  - Serialized model int8+zlib: 709,339 bytes
+Decision: keep vector phase as default; sinusoidal did not improve BPB at this scale.
+
+Next: scale model to better utilize the 16MB budget (current ~0.71MB). Target ~10–12M params (~13–15MB int8 payload), e.g., `MODEL_DIM≈1024, NUM_HEADS=8, NUM_KV_HEADS=4`, T=8, byte-level.
 - .gitignore excludes `data/datasets/`, `logs/`, and `final_model.*` to avoid large file commits.
 
 ## Data Prep (1×H100 host)
